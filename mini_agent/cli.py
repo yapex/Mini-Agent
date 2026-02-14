@@ -943,37 +943,79 @@ async def run_agent_non_interactive(workspace_dir: Path, message: str, quiet: bo
         retry_config=retry_config if config.llm.retry.enabled else None,
     )
 
-    tools, skill_loader = await initialize_base_tools(config)
-    add_workspace_tools(tools, config, workspace_dir)
+    if quiet:
+        import sys
+        from io import StringIO
 
-    system_prompt_path = Config.find_config_file(config.agent.system_prompt_path)
-    if system_prompt_path and system_prompt_path.exists():
-        system_prompt = system_prompt_path.read_text(encoding="utf-8")
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        try:
+            tools, skill_loader = await initialize_base_tools(config)
+            add_workspace_tools(tools, config, workspace_dir)
+
+            system_prompt_path = Config.find_config_file(
+                config.agent.system_prompt_path
+            )
+            if system_prompt_path and system_prompt_path.exists():
+                system_prompt = system_prompt_path.read_text(encoding="utf-8")
+            else:
+                system_prompt = "You are Mini-Agent, an intelligent assistant."
+
+            if skill_loader:
+                skills_metadata = skill_loader.get_skills_metadata_prompt()
+                if skills_metadata:
+                    system_prompt = system_prompt.replace(
+                        "{SKILLS_METADATA}", skills_metadata
+                    )
+                else:
+                    system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
+            else:
+                system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
+
+            agent = Agent(
+                llm_client=llm_client,
+                system_prompt=system_prompt,
+                tools=tools,
+                max_steps=config.agent.max_steps,
+                workspace_dir=str(workspace_dir),
+            )
+
+            agent.add_user_message(message)
+            result = await agent.run()
+        finally:
+            sys.stdout = old_stdout
+        print(result)
     else:
-        system_prompt = "You are Mini-Agent, an intelligent assistant."
+        tools, skill_loader = await initialize_base_tools(config)
+        add_workspace_tools(tools, config, workspace_dir)
 
-    if skill_loader:
-        skills_metadata = skill_loader.get_skills_metadata_prompt()
-        if skills_metadata:
-            system_prompt = system_prompt.replace("{SKILLS_METADATA}", skills_metadata)
+        system_prompt_path = Config.find_config_file(config.agent.system_prompt_path)
+        if system_prompt_path and system_prompt_path.exists():
+            system_prompt = system_prompt_path.read_text(encoding="utf-8")
+        else:
+            system_prompt = "You are Mini-Agent, an intelligent assistant."
+
+        if skill_loader:
+            skills_metadata = skill_loader.get_skills_metadata_prompt()
+            if skills_metadata:
+                system_prompt = system_prompt.replace(
+                    "{SKILLS_METADATA}", skills_metadata
+                )
+            else:
+                system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
         else:
             system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
-    else:
-        system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
 
-    agent = Agent(
-        llm_client=llm_client,
-        system_prompt=system_prompt,
-        tools=tools,
-        max_steps=config.agent.max_steps,
-        workspace_dir=str(workspace_dir),
-    )
+        agent = Agent(
+            llm_client=llm_client,
+            system_prompt=system_prompt,
+            tools=tools,
+            max_steps=config.agent.max_steps,
+            workspace_dir=str(workspace_dir),
+        )
 
-    agent.add_user_message(message)
-    result = await agent.run()
-
-    if quiet:
-        print(result)
+        agent.add_user_message(message)
+        result = await agent.run()
 
     await cleanup_mcp_connections()
 
