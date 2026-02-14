@@ -899,25 +899,20 @@ async def run_agent(workspace_dir: Path):
         )
 
 
-async def run_agent_non_interactive(workspace_dir: Path, message: str, quiet: bool):
-    """Run agent in non-interactive mode with single task execution.
+async def _setup_agent(config: Config, workspace_dir: Path) -> tuple["Agent", Config]:
+    """Setup agent with tools and system prompt.
 
     Args:
+        config: Configuration object
         workspace_dir: Workspace directory path
-        message: Task message to execute
-        quiet: If True, output only final result
+
+    Returns:
+        Tuple of (Agent instance, Config)
     """
     from .retry import RetryConfig as RetryConfigBase
     from .schema import LLMProvider
     from .llm import LLMClient
     from .agent import Agent
-
-    config_path = Config.get_default_config_path()
-    if not config_path.exists():
-        print(f"Configuration file not found: {config_path}")
-        return
-
-    config = Config.from_yaml(config_path)
 
     retry_config = RetryConfigBase(
         enabled=config.llm.retry.enabled,
@@ -941,6 +936,69 @@ async def run_agent_non_interactive(workspace_dir: Path, message: str, quiet: bo
         model=config.llm.model,
         retry_config=retry_config if config.llm.retry.enabled else None,
     )
+
+    if config.llm.retry.enabled:
+
+        def on_retry(exception: Exception, attempt: int):
+            pass  # Silent retry for non-interactive mode
+
+        llm_client.retry_callback = on_retry
+
+    tools, skill_loader = await initialize_base_tools(config)
+    add_workspace_tools(tools, config, workspace_dir)
+
+    system_prompt_path = Config.find_config_file(config.agent.system_prompt_path)
+    if system_prompt_path and system_prompt_path.exists():
+        system_prompt = system_prompt_path.read_text(encoding="utf-8")
+    else:
+        system_prompt = "You are Mini-Agent, an intelligent assistant."
+
+    if skill_loader:
+        skills_metadata = skill_loader.get_skills_metadata_prompt()
+        if skills_metadata:
+            system_prompt = system_prompt.replace("{SKILLS_METADATA}", skills_metadata)
+        else:
+            system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
+    else:
+        system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
+
+    agent = Agent(
+        llm_client=llm_client,
+        system_prompt=system_prompt,
+        tools=tools,
+        max_steps=config.agent.max_steps,
+        workspace_dir=str(workspace_dir),
+    )
+
+    return agent, config
+
+
+async def run_agent_non_interactive(
+    workspace_dir: Path, message: str, quiet: bool
+) -> int:
+    """Run agent in non-interactive mode with single task execution.
+
+    Args:
+        workspace_dir: Workspace directory path
+        message: Task message to execute
+        quiet: If True, output only final result
+
+    Returns:
+        Exit code: 0 for success, 1 for error
+    """
+    config_path = Config.get_default_config_path()
+    if not config_path.exists():
+        print(f"Configuration file not found: {config_path}")
+        return 1
+
+    try:
+        config = Config.from_yaml(config_path)
+    except ValueError as e:
+        print(f"Configuration error: {e}")
+        return 1
+    except Exception as e:
+        print(f"Failed to load configuration: {e}")
+        return 1
 
     if quiet:
         import sys
@@ -970,80 +1028,37 @@ async def run_agent_non_interactive(workspace_dir: Path, message: str, quiet: bo
         spinner = threading.Thread(target=spinner_thread, daemon=True)
         spinner.start()
 
-        tools, skill_loader = await initialize_base_tools(config)
-        add_workspace_tools(tools, config, workspace_dir)
-
-        system_prompt_path = Config.find_config_file(config.agent.system_prompt_path)
-        if system_prompt_path and system_prompt_path.exists():
-            system_prompt = system_prompt_path.read_text(encoding="utf-8")
-        else:
-            system_prompt = "You are Mini-Agent, an intelligent assistant."
-
-        if skill_loader:
-            skills_metadata = skill_loader.get_skills_metadata_prompt()
-            if skills_metadata:
-                system_prompt = system_prompt.replace(
-                    "{SKILLS_METADATA}", skills_metadata
-                )
-            else:
-                system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
-        else:
-            system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
-
-        agent = Agent(
-            llm_client=llm_client,
-            system_prompt=system_prompt,
-            tools=tools,
-            max_steps=config.agent.max_steps,
-            workspace_dir=str(workspace_dir),
-        )
-
-        agent.add_user_message(message)
-
         try:
+            agent, _ = await _setup_agent(config, workspace_dir)
+            agent.add_user_message(message)
             result = await agent.run()
+            print(result)
+            return 0
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
         finally:
             spinner_running[0] = False
             spinner.join(timeout=0.5)
             sys.stdout = old_stdout
-        print(result)
+            await cleanup_mcp_connections()
     else:
-        tools, skill_loader = await initialize_base_tools(config)
-        add_workspace_tools(tools, config, workspace_dir)
-
-        system_prompt_path = Config.find_config_file(config.agent.system_prompt_path)
-        if system_prompt_path and system_prompt_path.exists():
-            system_prompt = system_prompt_path.read_text(encoding="utf-8")
-        else:
-            system_prompt = "You are Mini-Agent, an intelligent assistant."
-
-        if skill_loader:
-            skills_metadata = skill_loader.get_skills_metadata_prompt()
-            if skills_metadata:
-                system_prompt = system_prompt.replace(
-                    "{SKILLS_METADATA}", skills_metadata
-                )
-            else:
-                system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
-        else:
-            system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
-
-        agent = Agent(
-            llm_client=llm_client,
-            system_prompt=system_prompt,
-            tools=tools,
-            max_steps=config.agent.max_steps,
-            workspace_dir=str(workspace_dir),
-        )
-
-        agent.add_user_message(message)
-        result = await agent.run()
-
-    await cleanup_mcp_connections()
+        try:
+            agent, _ = await _setup_agent(config, workspace_dir)
+            agent.add_user_message(message)
+            result = await agent.run()
+            return 0
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+        finally:
+            await cleanup_mcp_connections()
 
 
 def main():
     """Main entry point for CLI"""
+    import sys
+
     # Parse command line arguments
     args = parse_args()
 
@@ -1070,7 +1085,10 @@ def main():
     if args.message:
         # Non-interactive mode: default to quiet (no verbose output)
         quiet_mode = not args.verbose
-        asyncio.run(run_agent_non_interactive(workspace_dir, args.message, quiet_mode))
+        exit_code = asyncio.run(
+            run_agent_non_interactive(workspace_dir, args.message, quiet_mode)
+        )
+        sys.exit(exit_code)
     else:
         # Interactive mode (existing)
         asyncio.run(run_agent(workspace_dir))
