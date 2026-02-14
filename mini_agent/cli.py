@@ -945,44 +945,67 @@ async def run_agent_non_interactive(workspace_dir: Path, message: str, quiet: bo
 
     if quiet:
         import sys
+        import threading
         from io import StringIO
 
         old_stdout = sys.stdout
         sys.stdout = StringIO()
-        try:
-            tools, skill_loader = await initialize_base_tools(config)
-            add_workspace_tools(tools, config, workspace_dir)
 
-            system_prompt_path = Config.find_config_file(
-                config.agent.system_prompt_path
-            )
-            if system_prompt_path and system_prompt_path.exists():
-                system_prompt = system_prompt_path.read_text(encoding="utf-8")
-            else:
-                system_prompt = "You are Mini-Agent, an intelligent assistant."
+        spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        spinner_running = [True]
 
-            if skill_loader:
-                skills_metadata = skill_loader.get_skills_metadata_prompt()
-                if skills_metadata:
-                    system_prompt = system_prompt.replace(
-                        "{SKILLS_METADATA}", skills_metadata
-                    )
-                else:
-                    system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
+        def spinner_thread():
+            import time
+
+            idx = 0
+            while spinner_running[0]:
+                sys.stdout.write(
+                    f"\r{spinner_chars[idx % len(spinner_chars)]} Thinking... "
+                )
+                sys.stdout.flush()
+                time.sleep(0.1)
+                idx += 1
+            sys.stdout.write("\r" + " " * 25 + "\r")
+            sys.stdout.flush()
+
+        spinner = threading.Thread(target=spinner_thread, daemon=True)
+        spinner.start()
+
+        tools, skill_loader = await initialize_base_tools(config)
+        add_workspace_tools(tools, config, workspace_dir)
+
+        system_prompt_path = Config.find_config_file(config.agent.system_prompt_path)
+        if system_prompt_path and system_prompt_path.exists():
+            system_prompt = system_prompt_path.read_text(encoding="utf-8")
+        else:
+            system_prompt = "You are Mini-Agent, an intelligent assistant."
+
+        if skill_loader:
+            skills_metadata = skill_loader.get_skills_metadata_prompt()
+            if skills_metadata:
+                system_prompt = system_prompt.replace(
+                    "{SKILLS_METADATA}", skills_metadata
+                )
             else:
                 system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
+        else:
+            system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
 
-            agent = Agent(
-                llm_client=llm_client,
-                system_prompt=system_prompt,
-                tools=tools,
-                max_steps=config.agent.max_steps,
-                workspace_dir=str(workspace_dir),
-            )
+        agent = Agent(
+            llm_client=llm_client,
+            system_prompt=system_prompt,
+            tools=tools,
+            max_steps=config.agent.max_steps,
+            workspace_dir=str(workspace_dir),
+        )
 
-            agent.add_user_message(message)
+        agent.add_user_message(message)
+
+        try:
             result = await agent.run()
         finally:
+            spinner_running[0] = False
+            spinner.join(timeout=0.5)
             sys.stdout = old_stdout
         print(result)
     else:
