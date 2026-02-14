@@ -958,14 +958,14 @@ async def run_agent_non_interactive(workspace_dir: Path, message: str, quiet: bo
 
             idx = 0
             while spinner_running[0]:
-                sys.stdout.write(
+                old_stdout.write(
                     f"\r{spinner_chars[idx % len(spinner_chars)]} Thinking... "
                 )
-                sys.stdout.flush()
+                old_stdout.flush()
                 time.sleep(0.1)
                 idx += 1
-            sys.stdout.write("\r" + " " * 25 + "\r")
-            sys.stdout.flush()
+            old_stdout.write("\r" + " " * 25 + "\r")
+            old_stdout.flush()
 
         spinner = threading.Thread(target=spinner_thread, daemon=True)
         spinner.start()
