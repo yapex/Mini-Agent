@@ -340,13 +340,12 @@ Examples:
         "-m",
         type=str,
         default=None,
-        help="Execute task directly and exit",
+        help="Execute task directly and exit (default: quiet mode with spinner)",
     )
     parser.add_argument(
-        "--quiet",
-        "-q",
+        "--verbose",
         action="store_true",
-        help="Quiet mode: output only final result",
+        help="Show detailed output (useful for debugging)",
     )
 
     # Subcommands
@@ -1069,8 +1068,9 @@ def main():
 
     # Run the agent (config always loaded from package directory)
     if args.message:
-        # Non-interactive mode
-        asyncio.run(run_agent_non_interactive(workspace_dir, args.message, args.quiet))
+        # Non-interactive mode: default to quiet (no verbose output)
+        quiet_mode = not args.verbose
+        asyncio.run(run_agent_non_interactive(workspace_dir, args.message, quiet_mode))
     else:
         # Interactive mode (existing)
         asyncio.run(run_agent(workspace_dir))
